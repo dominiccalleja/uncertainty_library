@@ -195,10 +195,11 @@ class Stochastic_model(Copula_sample):
             marginal = PDF(value)
             marginal.label = key
             self.marginals[key] = marginal
+            setattr(self,key,marginal)
 
     def generate_correlation_matrix(self, partial_correlations):
-        self.correlation_matrix = correlation_matrix(
-            self.Ndimensions, partial_correlations)
+
+        self.correlation_matrix = correlation_matrix(self.Ndimensions, partial_correlations)
 
     def choose_copula(self, theta, copula_choice='Gaussian'):
         print('TODO : impliment other copulas!!!')
@@ -208,6 +209,9 @@ class Stochastic_model(Copula_sample):
         if self.copula_choice not in copula_families:
             print('{} not in implimented bivariate copulas implimented: \n\t choose from: {}'.format(
                 self.copula_choice, copula_families))
+        elif self.copula_choice == 'Gaussian':
+            print('Using multivariate Gauss. Specify a corrlation matrix')
+
         else:
             if self.copula_choice == copula_families[1]:
                 if not (theta > -1 and theta < 1):
@@ -244,20 +248,23 @@ class Stochastic_model(Copula_sample):
                 parcor = np.zeros(len(self.marginals.keys()))
                 self.generate_correlation_matrix(parcor)
             # sample from the gaussian copula
-            c = up.cholesky(self.correlation_matrix)
+            c = cholesky(self.correlation_matrix)
             # TODO : Call copula from choice of copulas
-            z = np.random.normal(size=[Nsamples, self.Ndimensions])
-            x = np.matrix(z) * np.matrix(c).T       # project correlation
-            x = np.array(x)
+            mvnorm = stats.multivariate_normal([0,0],c)
+            x = mvnorm.rvs(Nsamples)
+            #z = np.random.normal(size=[Nsamples, self.Ndimensions])
+            #x = np.matrix(z) * np.matrix(c).T       # project correlation
+            #x = np.array(x)
             # Normalise samples
-            x = (x-np.min(x, axis=0))/(np.max(x, axis=0)-np.min(x, axis=0))
+            x =stats.norm.cdf(x)
         else:
             #self.sapler = Copula_sample(self.copula)
-            x = self.conditional_sample(Nsamples)
+            x = self.conditional_sample(Nsamples).T
 
         X = np.zeros([Nsamples, self.Ndimensions])
         for i, name in enumerate(self.marginals.keys()):
-            X[:, i] = self.marginals[name].inverse_transform(x[i])
+            X[:, i] = getattr(self, name).inverse_transform(x[:, i])
+            
         return X
 
 
@@ -270,13 +277,24 @@ def correlation_matrix(d, partial_corrs):
         for i in range(k+1, d):
             P[k, i] = partial_corrs[ll]
             p = P[k, i]
-            for l in up.inclusive_range(k-1, 0, -1):
+            for l in inclusive_range(k-1, 0, -1):
                 p = p * np.sqrt((1-P[l, i]**2) *
                                 (1-P[l, k]**2))+(P[l, i]*P[l, k])
             S[k, i] = p
             S[i, k] = p
             ll = ll+1
     return S
+
+
+def n_p_cor(res):
+    k = res-1
+    for i in range(k-1, 0, -1):
+        k += i
+    return int(k)
+
+
+def inclusive_range(start, stop, step):
+    return range(start, (stop + 1) if step >= 0 else (stop - 1), step)
 
 """
 Implimented copula classes 
@@ -433,9 +451,12 @@ class Copula_sample():
         return self._samples
 
     def plot_copula_cdf(self, cmap='hsv'):
-        contours = plt.contour(self._um, self._vm, self._pcdf, cmap=cmap)
-        plt.clabel(contours, inline=True, fontsize=8)
-        plt.show()
+        if self.copula_choice == 'Gaussian':
+            print('TODO : impliment for gaussian')
+        else:
+            contours = plt.contour(self._um, self._vm, self._pcdf, cmap=cmap)
+            plt.clabel(contours, inline=True, fontsize=8)
+            plt.show()
 
 
 
