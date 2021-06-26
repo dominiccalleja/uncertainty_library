@@ -1,3 +1,4 @@
+from scipy.linalg import eigh, cholesky
 from sklearn.neighbors import KernelDensity
 import numpy as np
 import numpy as np
@@ -11,7 +12,6 @@ mpl.rcParams.update({'font.size': 10})
 
 import scipy.signal as sig
 import scipy.stats as stats
-
 """
 Basic library USAGE
 
