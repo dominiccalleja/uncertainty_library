@@ -182,7 +182,8 @@ class PDF():
 Class to make stochastic model 
 """
 
-class Stochastic_model():
+
+class Stochastic_model(Copula_sample):
     def __init__(self, input_names):
         self.marginals = {}
         for i, name in enumerate(input_names):
@@ -191,7 +192,7 @@ class Stochastic_model():
 
     def generate_marginal(self, **kwargs):
         for key, value in kwargs.items():
-            marginal = stok.PDF(value)
+            marginal = PDF(value)
             marginal.label = key
             self.marginals[key] = marginal
 
@@ -233,6 +234,7 @@ class Stochastic_model():
                     print(error)
                 COPULA = Joe(theta)
             self.copula = COPULA
+            super().__init__(self.copula)
 
     def sample(self, Nsamples):
 
@@ -250,8 +252,8 @@ class Stochastic_model():
             # Normalise samples
             x = (x-np.min(x, axis=0))/(np.max(x, axis=0)-np.min(x, axis=0))
         else:
-            self.sapler = Copula_sample(self.copula)
-            x = self.sapler.conditional_sample(Nsamples)
+            #self.sapler = Copula_sample(self.copula)
+            x = self.conditional_sample(Nsamples)
 
         X = np.zeros([Nsamples, self.Ndimensions])
         for i, name in enumerate(self.marginals.keys()):
