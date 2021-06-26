@@ -203,6 +203,12 @@ class Stochastic_model(Copula_sample):
 
     def choose_copula(self, theta, copula_choice='Gaussian'):
         print('TODO : impliment other copulas!!!')
+        """
+        Implimented all the bivariate archemedian copulas from the Wiki Page:
+
+        https://en.wikipedia.org/wiki/Copula_(probability_theory)
+        """
+
         self.copula_choice = copula_choice
         copula_families = ['Gaussian', 'Ali_Mik_Haq',
                            'Clayton', 'Frank', 'Gumbel', 'Joe']
@@ -268,6 +274,93 @@ class Stochastic_model(Copula_sample):
         return X
 
 
+    def add_dependent_copula(self, copula2, Ind_Var, Dep_Var):
+        print('Adding a third dependent variable with another copula')
+        self.shared_variable = Ind_Var
+        self.second_dependent_variable = Dep_Var
+        self.copula2 = copula2
+        if not hasattr(self, '_pcdf'):
+            print('Missing CDF for Copula 1. Computing now!')
+            self.compute_cdf()
+        if not hasattr(self.copula2, '_pcdf'):
+            print('Missing CDF for Copula 2. Computing now!')
+            self.copula2.compute_cdf()
+
+    def second_order_sample(self, Nsamples):
+        if not hasattr(self, 'copula2'):
+            print('ERROR: This method requires an additonal copula to be added to this model')
+            print('You can use this by creating a new Stochastic_model object with one sharred \n variable and then use add_dependent_copula()')
+
+        if self.shared_variable not in list(self.marginals.keys()):
+            print('ERROR: Inependent variable {} is not in this joint distribution! \n\t choose from {}'.format(
+                self.shared_variable, list(self.marginals.keys())))
+            return
+        if self.shared_variable not in list(self.copula2.marginals.keys()):
+            print('ERROR: Inependent variable {} is not in this joint distribution! \n\t choose from {}'.format(
+                self.shared_variable, list(self.copula2.marginals.keys())))
+            return
+        if self.second_dependent_variable not in list(self.copula2.marginals.keys()):
+            print('ERROR: Dependent variable {} is not in this joint distribution! \n\t choose from {}'.format(
+                self.second_dependent_variable, list(self.copula2.marginals.keys())))
+            return
+
+        # Sample this object joint distribution
+        X = self.sample(Nsamples)
+        var_ind = list(self.marginals.keys()).index(self.shared_variable)
+
+        X2 = second_order_sample(
+            self, self.copula2, X[:, var_ind], self.shared_variable, self.second_dependent_variable, Nsamples)
+
+        samples = np.concatenate([X.T, [X2]],axis=0).T
+        return samples
+    """
+    def plot_model_cdf(self, VAR0, VAR1, mesh_density=1000, cmap='hsv'):
+        
+        A = getattr(self, VAR0).inverse_transform([0,1])
+        B = getattr(self, VAR1).inverse_transform([0,1])
+
+        x_M = np.linspace(A[0], A[1], mesh_density)
+        Y_M = np.linspace(B[0], B[1], mesh_density)
+        um, vm = np.meshgrid(x_M,x_M)
+
+        U = np.vstack(um)
+        V = np.vstack(vm)
+
+        PMcdf = self.copula.copula(U, V)
+        contours = plt.contour(um, vm, PMcdf, cmap=cmap)
+        plt.clabel(contours, inline=True, fontsize=8)
+        plt.show()
+    """
+
+
+def second_order_sample(obj1, obj2, values, Ivar, Dvar, Nsamples):
+
+    # getting P values of independent variable
+    Px = getattr(obj1, Ivar).ppf(values).T
+
+    pY = np.linspace(0, 1, len(obj2._x_0))
+    Y = np.zeros(Nsamples)
+    obj2.mesh_sample()  # generating new copula mesh for copula2
+    for i in range(Nsamples):
+        # finding cdf of dependent variable
+        i_y = np.argmin(abs(obj2._x_0-Px[i]))
+        ppf_y0 = obj2._pcdf[i_y, :]  # extracting cdf of dependent variable
+        if i_y == len(obj2._x_0)-1:
+            ppf_y1 = obj2._pcdf[i_y-1, :]
+        else:
+            ppf_y1 = obj2._pcdf[i_y+1, :]
+
+        # partial deriverative of dependent variable
+        ppf_y = (ppf_y1-ppf_y0)/(obj2._x_0[1]-obj2._x_0[0])
+        y0 = np.random.uniform(0, 1, 1)              # uniform sample
+        # inverse transform dependent CDF
+        Y[i] = np.interp(y0, ppf_y, pY)
+
+    Y = getattr(obj2, Dvar).inverse_transform(Y)
+    return Y
+
+
+
 def correlation_matrix(d, partial_corrs):
     P = np.zeros([d, d])
     S = np.eye(d)
@@ -312,7 +405,7 @@ class Ali_Mik_Haq():
         return (1-self.theta)/(np.exp(t)-self.theta)
 
     def copula(self, U, V):
-        A = (U*V)/(1-(theta*(1-U)*(1-V)))
+        A = (U*V)/(1-(self.theta*(1-U)*(1-V)))
         return A  # np.concatenate([[U], [V]])
 
 
@@ -457,6 +550,7 @@ class Copula_sample():
             contours = plt.contour(self._um, self._vm, self._pcdf, cmap=cmap)
             plt.clabel(contours, inline=True, fontsize=8)
             plt.show()
+    
 
 
 
