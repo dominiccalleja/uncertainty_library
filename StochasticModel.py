@@ -3,8 +3,11 @@ from scipy.linalg import eigh, cholesky
 #from sklearn.neighbors import KernelDensity
 import statsmodels.api as sm
 from statsmodels.distributions.mixture_rvs import mixture_rvs
+from scipy.stats import gaussian_kde
 import sys 
 
+
+import time
 import numpy as np
 import numpy as np
 import pandas as pd
@@ -14,7 +17,7 @@ import matplotlib as mpl
 import copy
 import seaborn as sns
 import matplotlib.gridspec as gridspec
-mpl.rcParams.update({'font.size': 10})
+mpl.rcParams.update({'font.size': 15})
 
 import scipy.signal as sig
 import scipy.stats as stats
@@ -86,13 +89,13 @@ class PDF():
         if not hasattr(self, '_kde'):
             self.fit_kde()
         # np.interp(X, self.P, self.X)
-        return np.interp(P, self._kde.cdf, self._kde.support)
+        return np.interp(P, self._P_kde,  self._X_kde)
 
     def ppf(self, X):
         if not hasattr(self, '_kde'):
             self.fit_kde()
         # np.interp(X, self.X, self.P)
-        return np.interp(X, self._kde.support, self._kde.cdf)
+        return np.interp(X, self._X_kde, self._P_kde)
 
     def inverse_transform_ecdf(self, P):
         return np.interp(P, self.P, self.X)
@@ -118,14 +121,17 @@ class PDF():
         return xi
 
     def fit_kde(self):
-        self._kde = sm.nonparametric.KDEUnivariate(self.data)
-        self._kde.fit()
+        kde = sm.nonparametric.KDEUnivariate(self.data)
+        kde.fit(fft=True)
+        self._kde = kde
+        self._P_kde = kde.cdf
+        self._X_kde = kde.support
 
         """
         self._kde = KernelDensity(
             kernel='gaussian', bandwidth=0.75).fit(self.data.reshape(-1,1))
         """
-        return self._kde
+        return kde
 
     def confidence_distribution(self, alpha=0.95, n_interp=1000, xlim=[-1, 1]):
         L, R, X = confidence_limits_distribution(
@@ -212,16 +218,20 @@ Class for bivariate stochastic model defined by the marginals and an archemedian
 """
 
 class Stochastic_model():
-    def __init__(self, input_names):
+    def __init__(self, input_names, shared=False):
         self.marginals = {}
         for i, name in enumerate(input_names):
             self.marginals[name] = {}
         self.Ndimensions = len(input_names)
         self.label = ''
+        self.shared = shared
 
     def generate_marginal(self, **kwargs):
         for key, value in kwargs.items():
-            marginal = PDF(value)
+            if self.shared:
+                marginal=value
+            else:
+                marginal = PDF(value)
             marginal.label = key
             self.marginals[key] = marginal
             setattr(self, key, marginal)
@@ -514,16 +524,29 @@ class D_stochastic_model(Copula_calculus):
 Class containing methods to use the D vine copula 
 """
 class D_vine():
-    def __init__(self, marginal, theta, copula_choice):
+    def __init__(self, marginal, theta, copula_choice, stationary=True):
+        print('Initialising D vine')
         self.marginal = marginal
         self.theta = theta
         self.copula_choice = copula_choice
 
         self._copula_node_array = []
+        self.stationary = stationary
+        if stationary:
+            self._stationary_marginal()
+    
+    def _stationary_marginal(self):
+        self.marginal = PDF(self.marginal)
+        print('Evaluating Kernel Density once to save time!')
+        t0 = time.time()
+        self.marginal.fit_kde()
+        t1 = time.time()
+        print('KDE evaluation complete: Time Elapsed : {}'.format(t1-t0))
 
     def fit_first_order(self):
         self.order_1_copula = fit_first_order_copula(
-            self.marginal, self.theta, self.copula_choice)
+            self.marginal, self.theta, self.copula_choice,stationary=self.stationary)
+
         self._copula_node_array.append(
             list(getattr(self, 'order_1_copula').keys()))
 
@@ -579,53 +602,75 @@ class D_vine():
         x[2] = self.order_2_copula[0].H(B, x[0], inv=True)
         return x
 
-    def _samp_vine(self, X= []):
+    def _samp_vine(self, X=[]):
+        """
+        ===================================================================
+        K. Aas, C. Czado, A. Frigessi, and H. Bakken. 
+        Pair-copula constructions of multiple dependence.Insurance:  
+        Mathematics and Economics, 44(2):182–198, 2009
+        ===================================================================
+        Algorithm 2 Simulation algorithm for D-vine. Generates one sample x1, . . . , xn from the vine. Sample
+        """
 
-        def Lvr(x):
-            return x+1
         n_var = len(getattr(self, '_copula_node_array')[0])+1
+        Arr = getattr(self, '_copula_node_array')
+        lev = 1
+        j = 1
 
-        lev = j = 0
-        if len(X):
-            w = np.concatenate([X, np.random.uniform(0, 1, 1)])
-        else:
-            w = np.random.uniform(0, 1, n_var)
+        #if len(X):
+        #    w = np.concatenate([X, np.random.uniform(0, 1, 1)])
+        #else:
+        w = np.concatenate([[np.array(np.nan)], np.random.uniform(0, 1, n_var)])
+
+        #print('W:{}'.format(w))
+
         x = np.zeros(np.shape(w))
-        v = np.zeros([np.shape(w)[0], np.shape(w)[0]])
+        v = np.zeros([np.shape(w)[0]+1, np.shape(w)[0]+1])
 
-        x[0] = v[0, 0] = w[0]
-        x[1] = v[1, 0] = getattr(self, 'order_{}_copula'.format(Lvr(lev)))[
-            j].H(w[1], v[0, 0], inv=True)
-        v[1, 1] = getattr(self, 'order_{}_copula'.format(Lvr(lev)))[
-            j].H(v[0, 0], v[1, 0], inv=False)
+        x[1] = v[1, 1] = w[1]
+        x[2] = v[2, 1] = getattr(self, 'order_{}_copula'.format(lev))[
+            j].H(w[2], v[1, 1], inv=True)
+        v[2, 2] = getattr(self, 'order_{}_copula'.format(lev))[
+            j].H(v[1, 1], v[2, 1], inv=False)
 
-        for i in range(2, n_var):
+        for i in range(3, n_var+1):
+
+            #print('V:{}'.format(v))
+            #print(i)
+
             # one main for-loop containing one for- loop for sampling the variables
-            v[i, 0] = w[i]
-            for k in range(i-2, 2, -1):
-                v[i, 0] = getattr(self, 'order_{}_copula'.format(
-                    Lvr(i-k)))[k].H(v[i, 0], v[i-1, 2*k-2], inv=True)
-            v[i, 0] = getattr(self, 'order_{}_copula'.format(
-                Lvr(i-1)))[0].H(v[i, 0], v[i-1, 0], inv=True)
-            x[i] = v[i, 0]
-            if i == n_var-1:
+            v[i, 1] = w[i]
+            for k in range(i-1, 2, -1):
+                v[i, 1] = getattr(self, 'order_{}_copula'.format(
+                    i-k))[k].H(v[i, 1], v[i-1, 2*k-2], inv=True)
+
+            v[i, 1] = getattr(self, 'order_{}_copula'.format(i-1)
+                            )[1].H(v[i, 1], v[i-1, 1], inv=True)
+            x[i] = v[i, 1]
+            if i == n_var:
                 break
 
-            v[i, 1] = getattr(self, 'order_{}_copula'.format(
-                Lvr(i-1)))[0].H(v[i-1, 0], v[i, 0], inv=False)
-            v[i, 2] = getattr(self, 'order_{}_copula'.format(
-                Lvr(i-1)))[0].H(v[i, 0], v[i-1, 0], inv=False)
+            v[i, 2] = getattr(self, 'order_{}_copula'.format(i-1)
+                            )[1].H(v[i-1, 1], v[i, 1], inv=False)
+            v[i, 3] = getattr(self, 'order_{}_copula'.format(i-1)
+                            )[1].H(v[i, 1], v[i-1, 1], inv=False)
 
-            if i > 2:
-                for j in range(1, i-2):
+            if i > 3:
+                for j in range(2, i-2):
                     #one for-loop for computing the needed conditional distribution functions
-                    v[i, 2*j] = getattr(self, 'order_{}_copula'.format(Lvr(i-j))
+                    v[i, 2*j] = getattr(self, 'order_{}_copula'.format(i-j)
                                         )[j].H(v[i-1, 2*j-2], v[i, 2*j-1], inv=False)
-                    v[i, 2*j+1] = getattr(self, 'order_{}_copula'.format(Lvr(i-j)))[
-                        j].H(v[i, 2*j-1], v[i-1, 2*j-2], inv=False)
-            v[i, 2*i-3] = getattr(self, 'order_{}_copula'.format(Lvr(0))
+                    v[i, 2*j+1] = getattr(self, 'order_{}_copula'.format(i-j)
+                                        )[j].H(v[i, 2*j-1], v[i-1, 2*j-2], inv=False)
+
+            #print('A:{},{}'.format(i, 2*i-2))
+            #print('CopLev:{}'.format(i-1))
+            #print('CopI:{}'.format(1))
+            #print('V0:{},{}'.format(i-1, 2*i-4))
+            #print('V1:{},{}'.format(i, 2*i-3))
+            v[i, 2*i-2] = getattr(self, 'order_{}_copula'.format(1)
                                 )[i-1].H(v[i-1, 2*i-4], v[i, 2*i-3], inv=False)
-        return x
+        return x[1:]
 
     def forcast_vine(self, X=[]):
         return self._samp_vine(self, X=X)
@@ -647,7 +692,7 @@ class D_vine():
         return 'TODO'  # Method takes X, Values at the lags.
 
 
-def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE):
+def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE, stationary=True):
     N_lag = len(THETA)
     copula_labels = ['T0_I{}'.format(N_lag-i) for i in range(N_lag)]
     variables = ['L{}'.format(N_lag-i) for i in range(N_lag+1)]
@@ -655,15 +700,24 @@ def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE):
     COP = {}
 
     for i in range(N_lag):
-        copula = Stochastic_model([variables[i], variables[i+1]])
-        inputs = {variables[i]: Marginal, variables[i+1]: Marginal}
+        if stationary:
+            Marginal0 = copy.deepcopy(Marginal)
+            Marginal1 = copy.deepcopy(Marginal0)
+            Marginal0.label = variables[i]
+            Marginal1.label = variables[i+1]
+            inputs = {variables[i]: Marginal0, variables[i+1]: Marginal1}
+            copula = Stochastic_model([variables[i], variables[i+1]],shared=True)
+        else:
+            copula = Stochastic_model([variables[i], variables[i+1]])
+            inputs = {variables[i]: Marginal, variables[i+1]: Marginal}
+
         copula.generate_marginal(**inputs)
         copula.choose_copula(THETA[i], copula_choice=COPULA_CHOICE)
         copula.mesh_sample(mesh_density=800)
         copula.compute_cdf()
         copula.label = copula_labels[i]
         copula.marginal_labels = [variables[i], variables[i+1]]
-        COP[i] = copula
+        COP[i+1] = copula
     return COP
 
 
@@ -679,8 +733,8 @@ def fit_higher_order_copula(copula_dict, copula_list, level=1):
         Dvine = D_stochastic_model(
             copula_dict[copula_list[i]], copula_dict[copula_list[i+1]], _level=level)
         cop_name, cop = Dvine.compute_conditional_copula()
-        cop_list_2[i] = {}
-        cop_list_2[i] = cop
+        cop_list_2[i+1] = {}
+        cop_list_2[i+1] = cop
     return cop_list_2
 
 """
@@ -949,3 +1003,44 @@ def confidence_limits_distribution(x, alpha, interval=False, n_interp=100, plot=
         plt.xlabel(label)
         plt.ylabel('P(x)')
     return L, R, x_i
+
+
+def plot_lag_scatter(Data, lag, label, save_address=[],rows=2):
+    if isinstance(Data,list):
+        flag= False
+    
+    a = int(rows)
+    b = int(len(lag)/2)
+    fig, (axs) = plt.subplots(ncols=b, nrows=a,
+                              figsize=(b*5, a*5), sharex='col', sharey='row')
+    fig.subplots_adjust(hspace=0.2, wspace=0.03)
+    c = 0
+    axs[0, 0].set_ylabel(label)
+    for f, i in enumerate(lag):
+        f0 = f
+        if f > b-1:
+            f0 = f - b
+
+        if f == b:
+            c += 1
+            axs[c, 0].set_ylabel(label)
+        if flag:
+            xy = np.vstack([Data[:-i], Data[i:]])
+        else:
+            xy = np.vstack([Data[f][:,0], Data[f][:,1]])
+        z = gaussian_kde(xy)(xy)
+        
+        if flag:
+            axs[c, f0].scatter(Data[:-i], Data[i:], c=z, marker='+')
+        else:
+            axs[c, f0].scatter(Data[f][:,0], Data[f][:,1], c=z, marker='+')
+
+        axs[c, f0].text(0.01, 0.9, s='Lag : {}'.format(i),
+                        horizontalalignment='left',
+                        verticalalignment='top',
+                        transform=axs[c, f0].transAxes, size=18, c='red')
+        if c == a-1:
+            axs[c, f0].set_xlabel(label)
+    if save_address:
+        plt.savefig(save_address)
+    plt.show()
