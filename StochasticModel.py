@@ -1,11 +1,15 @@
 from scipy.linalg import eigh, cholesky
 from sklearn.neighbors import KernelDensity
+
+import sys 
+
 import numpy as np
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
+import copy
 import seaborn as sns
 import matplotlib.gridspec as gridspec
 mpl.rcParams.update({'font.size': 10})
@@ -179,6 +183,80 @@ class PDF():
 
 
 """
+Copula sampling class
+"""
+
+
+class Copula_sample():
+    def __init__(self, copula):
+        self.copula = copula
+
+    def mesh_sample(self, mesh_density=1000):
+        #TODO : impliment differential mesh density to optionally
+        # modify the accuracy of interpolation on the different dimensions
+        # useful if one of the pdfs is dirty
+        self._mesh_density = mesh_density
+        self._x_0 = np.linspace(0, 1, mesh_density)
+        self._um, self._vm = np.meshgrid(self._x_0, self._x_0)
+        self.U = np.vstack(self._um)
+        self.V = np.vstack(self._vm)
+
+    def compute_cdf(self):
+        if not hasattr(self, '_us'):
+            self.mesh_sample()
+        self._pcdf = self.copula.copula(self.U, self.V)
+
+    def conditional_sample(self, Nsamples):
+        if not hasattr(self, '_pcdf'):
+            self.compute_cdf()
+
+        if self._mesh_density < Nsamples:
+            print(
+                'WARNING: Sample size is lower than CDF mesh density, increasing mesh density!')
+            self.mesh_sample(mesh_density=2*Nsamples)
+            print('Reevaluating CDF')
+            self.compute_cdf()
+
+        X = np.random.uniform(0, 1, Nsamples)
+        Y = np.zeros(Nsamples)
+        pY = np.linspace(0, 1, len(self._x_0))
+
+        for i in range(Nsamples):
+            i_y = np.argmin(abs(self._x_0-X[i]))
+            ppf_y0 = self._pcdf[i_y, :]
+
+            if i_y == len(self._x_0)-1:
+                ppf_y1 = self._pcdf[i_y-1, :]
+            else:
+                ppf_y1 = self._pcdf[i_y+1, :]
+
+            ppf_y = (ppf_y1-ppf_y0)/(self._x_0[1]-self._x_0[0])
+            y0 = np.random.uniform(0, 1, 1)
+            Y[i] = np.interp(y0, ppf_y, pY)
+
+        self._samples = np.concatenate([[X], [Y]])
+        return self._samples
+
+    def plot_copula_cdf(self, cmap='hsv'):
+        if self.copula_choice == 'Gaussian':
+            print('TODO : impliment for gaussian')
+        else:
+            contours = plt.contour(self._um, self._vm, self._pcdf, cmap=cmap)
+            plt.clabel(contours, inline=True, fontsize=8)
+            
+            try:
+                plt.xlabel(self.copula.marginal_labels.keys()[0])
+                plt.ylabel(self.copula.marginal_labels.keys()[1])
+            except:
+                print('No variable labels.')
+            plt.show()
+            
+            
+
+
+
+
+"""
 Class to make stochastic model 
 """
 
@@ -190,16 +268,19 @@ class Stochastic_model(Copula_sample):
             self.marginals[name] = {}
         self.Ndimensions = len(input_names)
 
+        self.label = ''
+
     def generate_marginal(self, **kwargs):
         for key, value in kwargs.items():
             marginal = PDF(value)
             marginal.label = key
             self.marginals[key] = marginal
-            setattr(self,key,marginal)
+            setattr(self, key, marginal)
 
     def generate_correlation_matrix(self, partial_correlations):
 
-        self.correlation_matrix = correlation_matrix(self.Ndimensions, partial_correlations)
+        self.correlation_matrix = correlation_matrix(
+            self.Ndimensions, partial_correlations)
 
     def choose_copula(self, theta, copula_choice='Gaussian'):
         print('TODO : impliment other copulas!!!')
@@ -256,13 +337,13 @@ class Stochastic_model(Copula_sample):
             # sample from the gaussian copula
             c = cholesky(self.correlation_matrix)
             # TODO : Call copula from choice of copulas
-            mvnorm = stats.multivariate_normal([0,0],c)
+            mvnorm = stats.multivariate_normal([0, 0], c)
             x = mvnorm.rvs(Nsamples)
             #z = np.random.normal(size=[Nsamples, self.Ndimensions])
             #x = np.matrix(z) * np.matrix(c).T       # project correlation
             #x = np.array(x)
             # Normalise samples
-            x =stats.norm.cdf(x)
+            x = stats.norm.cdf(x)
         else:
             #self.sapler = Copula_sample(self.copula)
             x = self.conditional_sample(Nsamples).T
@@ -270,9 +351,8 @@ class Stochastic_model(Copula_sample):
         X = np.zeros([Nsamples, self.Ndimensions])
         for i, name in enumerate(self.marginals.keys()):
             X[:, i] = getattr(self, name).inverse_transform(x[:, i])
-            
-        return X
 
+        return X
 
     def add_dependent_copula(self, copula2, Ind_Var, Dep_Var):
         print('Adding a third dependent variable with another copula')
@@ -288,7 +368,8 @@ class Stochastic_model(Copula_sample):
 
     def second_order_sample(self, Nsamples):
         if not hasattr(self, 'copula2'):
-            print('ERROR: This method requires an additonal copula to be added to this model')
+            print(
+                'ERROR: This method requires an additonal copula to be added to this model')
             print('You can use this by creating a new Stochastic_model object with one sharred \n variable and then use add_dependent_copula()')
 
         if self.shared_variable not in list(self.marginals.keys()):
@@ -311,27 +392,158 @@ class Stochastic_model(Copula_sample):
         X2 = second_order_sample(
             self, self.copula2, X[:, var_ind], self.shared_variable, self.second_dependent_variable, Nsamples)
 
-        samples = np.concatenate([X.T, [X2]],axis=0).T
+        samples = np.concatenate([X.T, [X2]], axis=0).T
         return samples
-    """
-    def plot_model_cdf(self, VAR0, VAR1, mesh_density=1000, cmap='hsv'):
-        
-        A = getattr(self, VAR0).inverse_transform([0,1])
-        B = getattr(self, VAR1).inverse_transform([0,1])
 
-        x_M = np.linspace(A[0], A[1], mesh_density)
-        Y_M = np.linspace(B[0], B[1], mesh_density)
-        um, vm = np.meshgrid(x_M,x_M)
+    def add_dependent_copula_series(self, copula_list, Ind_Var_list, Dep_Var_list):
+        print('Adding a list of dependent copulas')
+        self.shared_var_list = Ind_Var_list
+        self.depend_var_list = Dep_Var_list
+        self.copula_list = copula_list
 
-        U = np.vstack(um)
-        V = np.vstack(vm)
+        for i, cop in enumerate(self.copula_list):
+            getattr(cop, 'compute_cdf')()
 
-        PMcdf = self.copula.copula(U, V)
-        contours = plt.contour(um, vm, PMcdf, cmap=cmap)
-        plt.clabel(contours, inline=True, fontsize=8)
+    def construct_D_vine_copula(self):
+        print('\n\nComputing the D-Vine copula series.')
+        print('WARNING: I\'m doing a lot of numerical integration! I may take a while for very long series!')
+        print('Don\'t worry here is a handry progress bar for you to know whats occurin!')
+        print('\nTODO: Assuming the list of copulas is from Lag-h to Lag-1. Need to add option for other way around!')
+
+        NLAG = len(self.copula_list)
+        print('Evaluating the condintional D-Vine copula for {} Lags'.format(NLAG))
+        print('')
+        toolbar_width = 100
+        # setup toolbar
+        sys.stdout.write("[{}]".format(" " * toolbar_width))
+        sys.stdout.flush()
+        sys.stdout.write("\b" * (1))
+        prog_lim = int(100/len(self.copula_list))
+        progress_c = 0
+        i = 1
+        copula_list = self.copula_list
+
+        cop0 = copula_list[0]
+        cop_cal0 = Copula_calculus(cop0)
+        cop_cal0.partial_deriv()
+        d_uw0 = copula_list[0].df_u
+        copula_list.pop(0)
+
+        progress_c += i*prog_lim
+        sys.stdout.write(
+            '\r'+'[{} - {}%'.format(progress_c*'#', progress_c))
+        sys.stdout.flush()
+
+        D_Vine_cop = []
+        D_Vine_cop.append(self.copula_list[0]._pcdf)
+        for cop in copula_list:
+            cop_cal1 = Copula_calculus(cop)
+            cop_cal1.partial_deriv()
+            d_uw1 = cop_cal1.lagged_copula(cop0)
+            D_Vine_cop.append(d_uw1)
+
+            cop0 = copy.deepcopy(cop)
+
+            i += 1
+            progress_c = i*prog_lim
+            sys.stdout.write(
+                '\r'+'[{} - {}%'.format(progress_c*'#', progress_c))
+            sys.stdout.flush()
+
+        sys.stdout.write("]\n")
+        self.D_Vine_cop = D_Vine_cop
+        print('Complete. The copula series is now in self.D_Vine_cop')
+        print('Overwritten the bivariate copulas CDF with the new conditional D-Vine CDF is self.copula_list._pcdf')
+
+    def plot_D_vine(self, save_address=[]):
+
+        fig, (axs) = plt.subplots(ncols=3, nrows=len(self.copula_list),
+                                  sharey=True, sharex=True, figsize=(15, 5*len(self.copula_list)))
+        fig.subplots_adjust(hspace=0.1, wspace=0.1)
+
+        for i in range(len(self.copula_list)):
+            col = axs[i, 0].contour(self.copula_list[i]._um, self.copula_list[i]._vm,
+                                    self.copula_list[i]._pcdf, cmap='jet', levels=30)
+            axs[i, 0].clabel(col, inline=True, fontsize=10)
+            axs[i, 0].set_ylabel(self.copula_list[i].label)
+        axs[i, 0].set_xlabel('Independent Copula CDF')
+        for i in range(len(self.copula_list)):
+            col = axs[i, 1].contour(self.copula_list[i]._um, self.copula_list[i]._vm,
+                                    self.D_Vine_cop[i], cmap='jet', levels=30)
+            axs[i, 1].clabel(col, inline=True, fontsize=10)
+        axs[i, 1].set_xlabel('Conditional Copulas CDF')
+        for i in range(len(self.copula_list)):
+            col = axs[i, 2].contour(self.copula_list[i]._um, self.copula_list[i]._vm,
+                                    self.copula_list[i]._pcdf-self.D_Vine_cop[i], cmap='Dark2_r', levels=15)
+            axs[i, 2].clabel(col, inline=True, fontsize=10)
+        axs[i, 2].set_xlabel('Difference CDF')
+        if save_address:
+            fig.savefig(save_address)
         plt.show()
-    """
 
+    def sample_copula_series(self, Nsamples):
+        # Sample this object joint distribution
+        X = self.sample(Nsamples)
+        self.copula_series_samples = []
+        self.copula_series_samples.append(X[:, 0])
+        self.copula_series_samples.append(X[:, 1])
+
+        var_ind = 1
+        X = X[:, var_ind]
+        base = copy.deepcopy(self)
+        for i, cop in enumerate(self.copula_list):
+            X = second_order_sample(
+                base, cop, X, self.shared_var_list[i], self.depend_var_list[i], Nsamples)
+            base = copy.deepcopy(cop)
+            self.copula_series_samples.append(X)
+        return self.copula_series_samples
+
+    def keys(self):
+        return self.__dict__.keys()
+
+
+class Copula_calculus():
+    def __init__(self, copula_t):
+        print('\n__init__: Copula calculus object')
+        self.copula_t = copula_t
+
+    def partial_deriv(self, df_w_0=[]):
+        print('\t Computing partial deriverative of copula {}'.format(
+            self.copula_t.label))
+        dfu = np.gradient(self.copula_t._pcdf, self.copula_t._x_0, axis=0)
+        dfv = np.gradient(self.copula_t._pcdf, self.copula_t._x_0, axis=1)
+        self.copula_t.df_u = dfu
+        self.copula_t.df_v = dfv
+        self.copula_t.df_uv = dfu*dfv
+
+    def lagged_copula(self, copula_0):
+        print('\t Computing conditional partial deriverative of copula {} - copula {}'.format(
+            copula_0.label, self.copula_t.label))
+        # self._um, self._vm
+        #print('\t Computing {}'.format(r'$C_{t,t2} = \intg_{[0,1]} C_{0}(u,w)/dw$ C_{0}(u,w)/dw$ C_{t,t+1}(w,v)/dw'))
+        dwdt = np.zeros(np.shape(self.copula_t.df_u))
+
+        size = self.copula_t._x_0.shape[0]
+        cell = self.copula_t._x_0
+
+        dU = copula_0.df_u
+        dV = self.copula_t.df_v
+
+        self.dU = dU
+        self.dV = dV
+        W_interp = np.linspace(0, 1, size)
+        for i in range(size):
+            ind_U = np.argmin(abs(cell-W_interp[i]))
+            for j in range(size):
+                ind_V = np.argmin(abs(cell-W_interp[j]))
+
+                dw = 1/size * dU[:, ind_U] * dV[ind_V, :]
+                dwdt[i, j] = np.sum(dw)
+
+        self.copula_t.unconditional_pcdf = self.copula_t._pcdf
+        self.copula_t._pcdf = dwdt
+        lag_copula = dwdt
+        return lag_copula
 
 def second_order_sample(obj1, obj2, values, Ivar, Dvar, Nsamples):
 
@@ -358,7 +570,6 @@ def second_order_sample(obj1, obj2, values, Ivar, Dvar, Nsamples):
 
     Y = getattr(obj2, Dvar).inverse_transform(Y)
     return Y
-
 
 
 def correlation_matrix(d, partial_corrs):
@@ -487,70 +698,6 @@ class Clayton():
         A = Y**(self.theta/(-1-self.theta))
         B = Y**self.theta
         return ((A + B - 1)/B)**(-1/self.theta)
-
-"""
-Copula sampling class
-"""
-
-
-class Copula_sample():
-    def __init__(self, copula):
-        self.copula = copula
-
-    def mesh_sample(self, mesh_density=1000):
-        #TODO : impliment differential mesh density to optionally
-        # modify the accuracy of interpolation on the different dimensions
-        # useful if one of the pdfs is dirty
-        self._mesh_density = mesh_density
-        self._x_0 = np.linspace(0, 1, mesh_density)
-        self._um, self._vm = np.meshgrid(self._x_0, self._x_0)
-        self.U = np.vstack(self._um)
-        self.V = np.vstack(self._vm)
-
-    def compute_cdf(self):
-        if not hasattr(self, '_us'):
-            self.mesh_sample()
-        self._pcdf = self.copula.copula(self.U, self.V)
-
-    def conditional_sample(self, Nsamples):
-        if not hasattr(self, '_pcdf'):
-            self.compute_cdf()
-
-        if self._mesh_density < Nsamples:
-            print(
-                'WARNING: Sample size is lower than CDF mesh density, increasing mesh density!')
-            self.mesh_sample(mesh_density=2*Nsamples)
-            print('Reevaluating CDF')
-            self.compute_cdf()
-
-        X = np.random.uniform(0, 1, Nsamples)
-        Y = np.zeros(Nsamples)
-        pY = np.linspace(0, 1, len(self._x_0))
-
-        for i in range(Nsamples):
-            i_y = np.argmin(abs(self._x_0-X[i]))
-            ppf_y0 = self._pcdf[i_y, :]
-
-            if i_y == len(self._x_0)-1:
-                ppf_y1 = self._pcdf[i_y-1, :]
-            else:
-                ppf_y1 = self._pcdf[i_y+1, :]
-
-            ppf_y = (ppf_y1-ppf_y0)/(self._x_0[1]-self._x_0[0])
-            y0 = np.random.uniform(0, 1, 1)
-            Y[i] = np.interp(y0, ppf_y, pY)
-
-        self._samples = np.concatenate([[X], [Y]])
-        return self._samples
-
-    def plot_copula_cdf(self, cmap='hsv'):
-        if self.copula_choice == 'Gaussian':
-            print('TODO : impliment for gaussian')
-        else:
-            contours = plt.contour(self._um, self._vm, self._pcdf, cmap=cmap)
-            plt.clabel(contours, inline=True, fontsize=8)
-            plt.show()
-    
 
 
 
