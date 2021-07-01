@@ -65,8 +65,151 @@ pass the copula parameter and choose from the list of availiable copulas
 Class for univariate probability methods 
 """
 
-#Copula_sample
 
+class PDF():
+    def __init__(self, Data):
+        self.data = Data
+        self.P, self.X = ecdf(Data)
+
+        self.label = ''
+        self.Description = ''
+        self.units = ''
+    """
+    def __new__(self, *args, **kwargs):
+        return self.data.super().__new__(cls, *args, **kwargs)
+    """
+
+    def describe_object(self):
+        self._axis_label = '{} ({})'.format(self.label, self.units)
+
+    def inverse_transform(self, P):
+        if not hasattr(self, '_kde'):
+            self.fit_kde()
+        # np.interp(X, self.P, self.X)
+        return np.interp(P, self._kde.cdf, self._kde.support)
+
+    def ppf(self, X):
+        if not hasattr(self, '_kde'):
+            self.fit_kde()
+        # np.interp(X, self.X, self.P)
+        return np.interp(X, self._kde.support, self._kde.cdf)
+
+    def inverse_transform_ecdf(self, P):
+        return np.interp(P, self.P, self.X)
+
+    def ppf_ecdf(self, X):
+        return np.interp(X, self.X, self.P)
+
+    def sample(self, N):
+        U = np.random.uniform(0, 1, N)
+        #self.inverse_transform(U)
+        return self.inverse_transform(U)
+
+    def arg_sample(self, N, return_value=True):
+        U = np.random.uniform(0, 1, N)
+        xi = np.zeros(N)
+        y = np.zeros(N)
+        for i in range(N):
+            x = self.inverse_transform(U[i])
+            xi[i] = np.argmin(abs(self.data-x))
+            y[i] = self.data[int(xi[i])]
+        if return_value:
+            return xi, y
+        return xi
+
+    def fit_kde(self):
+        self._kde = sm.nonparametric.KDEUnivariate(self.data)
+        self._kde.fit()
+
+        """
+        self._kde = KernelDensity(
+            kernel='gaussian', bandwidth=0.75).fit(self.data.reshape(-1,1))
+        """
+        return self._kde
+
+    def confidence_distribution(self, alpha=0.95, n_interp=1000, xlim=[-1, 1]):
+        L, R, X = confidence_limits_distribution(
+            self.data, alpha, n_interp=n_interp, x_lim=xlim)
+        self._confidence_limits = np.concatenate([[X], [L], [R]])
+        return X, L, R
+
+    def confidence_mean(self, alpha=0.95):
+        self._confidence_mean = confidence_interval_mean(
+            self.data, confidence_interval=alpha)
+        return self._confidence_mean
+
+    def interp_condfidence_distribution(self, U, alpha=0.95):
+        N = np.size(self.data)
+        if len(self.data) > 1E3/2:
+            print(
+                'WARNING: Confidence limit interpolation too small. Increasing interpolant')
+            self.confidence_distribution(
+                alpha=alpha, n_interp=2*len(self.data))
+
+        b_l = np.interp(
+            U, self._confidence_limits[1, :], self._confidence_limits[0, :])
+        b_r = np.interp(
+            U, self._confidence_limits[2, :], self._confidence_limits[0, :])
+        if b_l <= self._confidence_limits[0, :].min():
+            b_l = np.inf
+        if b_r >= self._confidence_limits[0, :].max():
+            b_r = np.inf
+        return b_l, b_r
+
+    def plot_kde(self, n_bins=30, save_address=[]):
+        fig = plt.figure(figsize=(12, 9))
+        sns.distplot(self.data, n_bins)
+        if save_address:
+            fig.savefig(save_address)
+        plt.show()
+
+    def plot_ecdf(self, save_address=[]):
+        self.describe_object()
+
+        fig = plt.figure(figsize=(9, 9))
+        plt.step(self.X, self.P)
+        plt.xlabel(self._axis_label)
+        plt.ylabel('P(x)')
+        if save_address:
+            fig.savefig(save_address)
+        plt.show()
+
+    def plot_confidence_distribution(self, alpha=0.95, n_interp=1000, xlim=[-1, 1]):
+        self.describe_object()
+
+        L, R, X = confidence_limits_distribution(
+            self.data, alpha, n_interp=n_interp, plot=True, label=self._axis_label, x_lim=xlim)
+        plt.show()
+
+    def plot_multivariate_data(self, Y0, Y1, label_0='', label_1='', save_address=[]):
+        self.describe_object()
+
+        fig = plt.figure(figsize=(12, 9))
+        G = gridspec.GridSpec(4, 4)
+        ax = plt.subplot(G[:, :2])
+        ax = sns.distplot(self.data, 30)
+        ax.set_xlabel(self._axis_label)
+
+        ax.set_xlim([0, 125])
+        ax2 = plt.subplot(G[2:, 2:])
+        ax2.scatter(self.data, Y0, marker='+', s=50)
+        ax2.set_ylabel(label_0)
+        ax2.set_xlabel(self._axis_label)
+        ax2.set_xlim([0, 125])
+
+        ax1 = plt.subplot(G[:2, 2:], sharex=ax2)
+        ax1.scatter(self.data, Y1, marker='+', s=50)
+        ax1.set_ylabel(label_1)
+        ax1.set_xlabel(self._axis_label)
+        ax1.set_xlim([0, 125])
+        plt.tight_layout()
+        if save_address:
+            fig.savefig(save_address)
+        plt.show()
+
+"""
+Class for bivariate stochastic model defined by the marginals and an archemedian copula 
+"""
 
 class Stochastic_model():
     def __init__(self, input_names):
@@ -260,7 +403,9 @@ class Stochastic_model():
     def keys(self):
         return self.__dict__.keys()
 
-
+"""
+Class with some methods for numerical calculus on bivariate copula 
+"""
 class Copula_calculus():
     def __init__(self, copula, name=[]):
         print('\n__init__: Copula calculus object')
@@ -304,6 +449,9 @@ class Copula_calculus():
     def keys(self):
         return self.__dict__.keys()
 
+"""
+Class to develop an N dimensional multivariate distribution with a D Vine copula
+"""
 
 class D_stochastic_model(Copula_calculus):
     def __init__(self, stoch_model0, stoch_model1, _level=1):
@@ -362,7 +510,9 @@ class D_stochastic_model(Copula_calculus):
         d_vine_cop.marginals = marginals
         return copN, d_vine_cop
 
-
+"""
+Class containing methods to use the D vine copula 
+"""
 class D_vine():
     def __init__(self, marginal, theta, copula_choice):
         self.marginal = marginal
@@ -532,146 +682,6 @@ def fit_higher_order_copula(copula_dict, copula_list, level=1):
         cop_list_2[i] = {}
         cop_list_2[i] = cop
     return cop_list_2
-
-class PDF():
-    def __init__(self, Data):
-        self.data = Data
-        self.P, self.X = ecdf(Data)
-
-        self.label = ''
-        self.Description = ''
-        self.units = ''
-    """
-    def __new__(self, *args, **kwargs):
-        return self.data.super().__new__(cls, *args, **kwargs)
-    """
-    def describe_object(self):
-        self._axis_label = '{} ({})'.format(self.label, self.units)
-
-    def inverse_transform(self, P):
-        if not hasattr(self, '_kde'):
-            self.fit_kde()
-        return np.interp(P, self._kde.cdf, self._kde.support)  # np.interp(X, self.P, self.X)
-
-    def ppf(self, X):
-        if not hasattr(self, '_kde'):
-            self.fit_kde()
-        # np.interp(X, self.X, self.P)
-        return np.interp(X, self._kde.support, self._kde.cdf)
-
-    def inverse_transform_ecdf(self, P):
-        return np.interp(P, self.P, self.X)
-
-    def ppf_ecdf(self, X):
-        return np.interp(X, self.X, self.P)
-
-    def sample(self, N):
-        U = np.random.uniform(0, 1, N)
-        #self.inverse_transform(U)
-        return self.inverse_transform(U)
-
-    def arg_sample(self, N, return_value=True):
-        U = np.random.uniform(0, 1, N)
-        xi = np.zeros(N)
-        y = np.zeros(N)
-        for i in range(N):
-            x = self.inverse_transform(U[i])
-            xi[i] = np.argmin(abs(self.data-x))
-            y[i] = self.data[int(xi[i])]
-        if return_value:
-            return xi, y
-        return xi
-
-    def fit_kde(self):
-        self._kde = sm.nonparametric.KDEUnivariate(self.data)
-        self._kde.fit()
-            
-        """
-        self._kde = KernelDensity(
-            kernel='gaussian', bandwidth=0.75).fit(self.data.reshape(-1,1))
-        """
-        return self._kde
-
-    def confidence_distribution(self, alpha=0.95, n_interp=1000, xlim=[-1, 1]):
-        L, R, X = confidence_limits_distribution(
-            self.data, alpha, n_interp=n_interp, x_lim=xlim)
-        self._confidence_limits = np.concatenate([[X], [L], [R]])
-        return X, L, R
-
-    def confidence_mean(self, alpha=0.95):
-        self._confidence_mean = confidence_interval_mean(
-            self.data, confidence_interval=alpha)
-        return self._confidence_mean
-
-    def interp_condfidence_distribution(self, U, alpha=0.95):
-        N = np.size(self.data)
-        if len(self.data) > 1E3/2:
-            print(
-                'WARNING: Confidence limit interpolation too small. Increasing interpolant')
-            self.confidence_distribution(
-                alpha=alpha, n_interp=2*len(self.data))
-
-        b_l = np.interp(
-            U, self._confidence_limits[1, :], self._confidence_limits[0, :])
-        b_r = np.interp(
-            U, self._confidence_limits[2, :], self._confidence_limits[0, :])
-        if b_l <= self._confidence_limits[0, :].min():
-            b_l = np.inf
-        if b_r >= self._confidence_limits[0, :].max():
-            b_r = np.inf
-        return b_l, b_r
-
-    def plot_kde(self, n_bins=30, save_address=[]):
-        fig = plt.figure(figsize=(12, 9))
-        sns.distplot(self.data, n_bins)
-        if save_address:
-            fig.savefig(save_address)
-        plt.show()
-
-    def plot_ecdf(self, save_address=[]):
-        self.describe_object()
-
-        fig = plt.figure(figsize=(9, 9))
-        plt.step(self.X, self.P)
-        plt.xlabel(self._axis_label)
-        plt.ylabel('P(x)')
-        if save_address:
-            fig.savefig(save_address)
-        plt.show()
-
-    def plot_confidence_distribution(self, alpha=0.95, n_interp=1000, xlim=[-1, 1]):
-        self.describe_object()
-
-        L, R, X = confidence_limits_distribution(
-            self.data, alpha, n_interp=n_interp, plot=True, label=self._axis_label, x_lim=xlim)
-        plt.show()
-
-    def plot_multivariate_data(self, Y0, Y1, label_0='', label_1='', save_address=[]):
-        self.describe_object()
-
-        fig = plt.figure(figsize=(12, 9))
-        G = gridspec.GridSpec(4, 4)
-        ax = plt.subplot(G[:, :2])
-        ax = sns.distplot(self.data, 30)
-        ax.set_xlabel(self._axis_label)
-
-        ax.set_xlim([0, 125])
-        ax2 = plt.subplot(G[2:, 2:])
-        ax2.scatter(self.data, Y0, marker='+', s=50)
-        ax2.set_ylabel(label_0)
-        ax2.set_xlabel(self._axis_label)
-        ax2.set_xlim([0, 125])
-
-        ax1 = plt.subplot(G[:2, 2:], sharex=ax2)
-        ax1.scatter(self.data, Y1, marker='+', s=50)
-        ax1.set_ylabel(label_1)
-        ax1.set_xlabel(self._axis_label)
-        ax1.set_xlim([0, 125])
-        plt.tight_layout()
-        if save_address:
-            fig.savefig(save_address)
-        plt.show()
-
 
 """
 Copula sampling class
