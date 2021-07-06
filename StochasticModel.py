@@ -180,7 +180,7 @@ class PDF():
             fig.savefig(save_address)
         plt.show()
 
-    def plot_confidence_distribution(self, alpha=0.95, n_interp=1000, xlim=[-1, 1]):
+    def plot_confidence_distribution(self, alpha=0.95, n_interp=200, xlim=[-1, 1]):
         self.describe_object()
 
         L, R, X = confidence_limits_distribution(
@@ -218,13 +218,14 @@ Class for bivariate stochastic model defined by the marginals and an archemedian
 """
 
 class Stochastic_model():
-    def __init__(self, input_names, shared=False):
+    def __init__(self, input_names, shared=False, mesh_density=400):
         self.marginals = {}
         for i, name in enumerate(input_names):
             self.marginals[name] = {}
         self.Ndimensions = len(input_names)
         self.label = ''
         self.shared = shared
+        self.mesh_density = mesh_density
 
     def generate_marginal(self, **kwargs):
         for key, value in kwargs.items():
@@ -262,26 +263,26 @@ class Stochastic_model():
             if self.copula_choice == copula_families[0]:
                 COPULA = Gaussian(theta)
             if self.copula_choice == copula_families[1]:
-                if not (theta > -1 and theta < 1):
+                if not np.any(theta > -1 and theta < 1):
                     print(r'Error to use Ali–Mikhail–Haq $\theta \in -1,1$')
                 COPULA = Ali_Mik_Haq(theta)
             elif self.copula_choice == copula_families[2]:
-                if not (theta > -1 and theta != 0):
+                if not np.any(theta > -1 and theta != 0):
                     error = r'Error to use Clayton $\theta \in -1,\inf and \neq 0$'
                     print(error)
                 COPULA = Clayton(theta)
             elif self.copula_choice == copula_families[3]:
-                if not (theta != 0):
+                if not np.any(theta != 0):
                     error = r'Error to use Frank $\theta \neq 0$'
                     print(error)
                 COPULA = Frank(theta)
             elif self.copula_choice == copula_families[4]:
-                if not (theta > 1):
+                if not np.any(theta > 1):
                     error = r'Error to use Gumbel $\theta \neq 0$'
                     print(error)
                 COPULA = Gumbel(theta)
             elif self.copula_choice == copula_families[5]:
-                if not (theta > 1):
+                if not np.any(theta > 1):
                     error = r'Error to use Joe $\theta \neq 0$'
                     print(error)
                 COPULA = Joe(theta)
@@ -310,12 +311,13 @@ class Stochastic_model():
             if not hasattr(self, '_pcdf'):
                 self.compute_cdf()
 
-            if self._mesh_density < Nsamples:
-                print(
-                    'WARNING: Sample size is lower than CDF mesh density, increasing mesh density!')
-                self.mesh_sample(mesh_density=2*Nsamples)
-                print('Reevaluating CDF')
-                self.compute_cdf()
+            #if self.mesh_density < Nsamples:
+            #    print(
+            #        'WARNING: Sample size is lower than CDF mesh density, increasing mesh density!')
+            #    self.mesh_density = 2*Nsamples
+            #    self.mesh_sample()
+            #    print('Reevaluating CDF')
+            #    self.compute_cdf()
 
             U = np.random.uniform(0, 1, Nsamples)
             x = self.conditional_sample(U)
@@ -346,6 +348,22 @@ class Stochastic_model():
         self._samples = np.concatenate([[X], [Y]]).T
         return self._samples
 
+    def Like(self, X, V):
+        """ 
+        Likelihood of X from v
+        """
+        px = np.linspace(0, 1, len(self._x_0))
+        u = np.argmin(abs(self._x_0-X))
+        v = np.argmin(abs(self._x_0-V))
+        return self._pdf[u, v]
+
+    def LogL(self,x,v):
+        L = []
+        for i in range(len(x)):
+            L.append(self.Like(x[i],v[i]))
+
+        return np.sum(np.log(np.array(L)))
+
     def H(self, W, X, inv=True):
         """
         Conditioning at X and evaulating the inverse at W
@@ -372,12 +390,19 @@ class Stochastic_model():
             Y = np.interp(W, pY, ppf_y)
         return Y
 
-    def mesh_sample(self, mesh_density=800):
+    def H_mat(self,W,X,inv=True):
+        
+        h_out = []
+        for i in range(len(X)):
+            h_out.append(self.H(W[i],X[i],inv=inv))
+        return np.mean(h_out)
+
+    def mesh_sample(self):
         #TODO : impliment differential mesh density to optionally
         # modify the accuracy of interpolation on the different dimensions
         # useful if one of the pdfs is dirty
-        self._mesh_density = mesh_density
-        self._x_0 = np.linspace(0, 1, mesh_density)
+        
+        self._x_0 = np.linspace(0, 1, self.mesh_density)
         self._um, self._vm = np.meshgrid(self._x_0, self._x_0)
         self.U = np.vstack(self._um)
         self.V = np.vstack(self._vm)
@@ -386,6 +411,18 @@ class Stochastic_model():
         if not hasattr(self, '_us'):
             self.mesh_sample()
         self._pcdf = self.COPULA.copula(self.U, self.V)
+
+    def compute_pdf(self):
+        if not hasattr(self, '_pcdf'):
+            self.compute_cdf()
+        pdf = np.zeros(np.shape(self._pcdf))
+        pdf[1:-1, 1:-1] = np.gradient(np.gradient(self._pcdf[1:-1, 1:-1],
+                                                  self._x_0[1:-1], axis=1), self._x_0[1:-1], axis=0)
+        pdf[1:, 0] = pdf[1:,1]
+        pdf[0, 1:] = pdf[1, 1:]
+        pdf[0,0] =pdf[-1,-1] = np.max(pdf[1:-1,1:-1])
+        self._pdf = pdf/(len(self._x_0))
+
 
     def partial_deriv(self, df_w_0=[]):
         print('\t Computing partial deriverative of copula {}'.format(
@@ -397,8 +434,8 @@ class Stochastic_model():
         self.df_uv = dfu*dfv
 
     def plot_copula_cdf(self, cmap='hsv', n_levels=10):
-        #       if self.copula_choice == 'Gaussian':
-        #            print('TODO : impliment for gaussian')
+        #if self.copula_choice == 'Gaussian':
+        #print('TODO : impliment for gaussian')
         #else:
         fig = plt.figure()
         ax = fig.add_subplot(111)
@@ -408,6 +445,22 @@ class Stochastic_model():
         plt.xlabel(list(self.marginals.keys())[0])
         plt.ylabel(list(self.marginals.keys())[1])
         ax.set_aspect('equal', adjustable='box')
+        plt.show()
+    
+    def plot_copula_pdf(self,cmap='hsv',Nsamples=5000,levels=400):
+        marg_lab = list(self.marginals.keys())[0]
+        Px = self.marginals[marg_lab].ppf
+        Fx = self.marginals[marg_lab].inverse_transform
+
+        SAMP_X = Px(self.sample(Nsamples))
+        xy = np.vstack([SAMP_X[:, 0], SAMP_X[:, 1]])
+        z = gaussian_kde(xy)(xy)
+
+        plt.scatter(SAMP_X[:, 0], SAMP_X[:, 1], c=z, marker='+')
+
+        labs = plt.contour(self._um, self._vm, self._pdf,
+                           levels=levels, alpha=0.9, cmap=cmap)
+        plt.clabel(labs, inline=True, fontsize=10)
         plt.show()
 
     def keys(self):
@@ -436,18 +489,18 @@ class Copula_calculus():
         size = self._tmp_copula._x_0.shape[0]
         cell = self._tmp_copula._x_0
 
-        dU = copula_0.df_v
-        dV = self._tmp_copula.df_u
+        dU = copula_0.df_u
+        dV = self._tmp_copula.df_v
 
         self._tmp_copula.dU = dU
         self._tmp_copula.dV = dV
-        W_interp = np.linspace(0, 1, size)
+        W_interp = np.linspace(1,0, size)
         for i in range(size):
             ind_U = np.argmin(abs(cell-W_interp[i]))
             for j in range(size):
                 ind_V = np.argmin(abs(cell-W_interp[j]))
 
-                dw = abs(1/size * dU[ind_U,:] * dV[:,ind_V])
+                dw = abs(1/size * dU[:, ind_V] * dV[ind_U, :])
                 dwdt[i, j] = np.sum(dw)
 
         self._tmp_copula.unconditional_pcdf = self._tmp_copula._pcdf
@@ -510,7 +563,7 @@ class D_stochastic_model(Copula_calculus):
         # Udating marginals of the conditional copula
         marginals = {}
         marg_den = PDF(np.random.uniform(
-            0, 1, self.stoch_model0._mesh_density))
+            0, 1, self.stoch_model0.mesh_density))
         marginals[Var0] = marg_den
         marginals[Var1] = marg_den
         marginals[Var0].label = Var0
@@ -534,6 +587,8 @@ class D_vine():
         self.stationary = stationary
         if stationary:
             self._stationary_marginal()
+
+        self.mesh_density = 800
     
     def _stationary_marginal(self):
         self.marginal = PDF(self.marginal)
@@ -545,7 +600,7 @@ class D_vine():
 
     def fit_first_order(self):
         self.order_1_copula = fit_first_order_copula(
-            self.marginal, self.theta, self.copula_choice,stationary=self.stationary)
+            self.marginal, self.theta, self.copula_choice, stationary=self.stationary, mesh_density=self.mesh_density)
 
         self._copula_node_array.append(
             list(getattr(self, 'order_1_copula').keys()))
@@ -558,14 +613,32 @@ class D_vine():
         self.Fx = pdf.inverse_transform
         self.PDF = pdf
 
-    def fit_conditional_copula_row(self, level=2):
-
+    def fit_conditional_copula_row(self, Theta_Mat,level=2):
+        """
         # Just impliment serial dependence and the see how it is to simulate
         Vals = getattr(self, 'order_{}_copula'.format(level-1))
         N_copula = len(Vals)
         Keys = list(Vals)
         tmp = fit_higher_order_copula(Vals, Keys, level=level)
+        """
+        
+        N_lag = Theta_Mat.shape[0]
+        prev_N_lag = len(list(getattr(self, 'order_{}_copula'.format(level-1)).keys()))
+        # check Layer length:
+        if not prev_N_lag - 1 == N_lag:
+            print('ERROR: Theta_Mat length must be one less that lower layer \n\t Theta_Mat.shape[0] = {} - Must be {}'.format(N_lag,prev_N_lag -1))
+            return
+        #Theta_Mat = np.concatenate([[np.nan], Theta_Mat])
+        print('Setting Uniform Marginals.')
+        Marg = PDF(np.random.uniform(0, 1, 1000))
 
+        setattr(self,'order_{}_copula'.format(level),{})
+        #for j in range(1, N_lag): 
+        #    Marg.label = 'I{}_{}'.format(j,j+1)
+        setattr(self, 'order_{}_copula'.format(level),fit_first_order_copula(Marg, Theta_Mat, self.copula_choice, stationary=True, mesh_density=self.mesh_density))
+        self._copula_node_array.append(
+            list(getattr(self, 'order_{}_copula'.format(level)).keys()))
+            
     def fit_nth_order(self):
 
         level = 2
@@ -595,11 +668,11 @@ class D_vine():
             w = np.random.uniform(0, 1, var)
             x = np.zeros(np.shape(w))
             x[0] = w[0]
-            x[1] = self.order_1_copula[0].H(w[1], x[0], inv=True)
+            x[1] = self.order_1_copula[1].H(w[1], x[0], inv=True)
 
-        A = self.order_1_copula[0].H(x[1], x[0], inv=False)
-        B = self.order_1_copula[1].H(w[2], A, inv=True)
-        x[2] = self.order_2_copula[0].H(B, x[0], inv=True)
+        A = self.order_1_copula[1].H(x[1], x[0], inv=False)
+        B = self.order_1_copula[2].H(w[2], A, inv=True)
+        x[2] = self.order_2_copula[1].H(B, x[0], inv=True)
         return x
 
     def _samp_vine(self, X=[]):
@@ -611,66 +684,123 @@ class D_vine():
         ===================================================================
         Algorithm 2 Simulation algorithm for D-vine. Generates one sample x1, . . . , xn from the vine. Sample
         """
-
+        copula_array = deserialise_copula(self)
+        
         n_var = len(getattr(self, '_copula_node_array')[0])+1
         Arr = getattr(self, '_copula_node_array')
         lev = 1
         j = 1
 
-        #if len(X):
-        #    w = np.concatenate([X, np.random.uniform(0, 1, 1)])
-        #else:
-        w = np.concatenate([[np.array(np.nan)], np.random.uniform(0, 1, n_var)])
+        if len(X):
+            w = np.concatenate([[np.array(np.nan)],X, np.random.uniform(0, 1, 1)])
+        else:
+            w = np.concatenate([[np.array(np.nan)], np.random.uniform(0, 1, n_var)])
 
         #print('W:{}'.format(w))
 
         x = np.zeros(np.shape(w))
-        v = np.zeros([np.shape(w)[0]+1, np.shape(w)[0]+1])
+        v = np.zeros([np.shape(w)[0]+n_var, np.shape(w)[0]+n_var])
 
         x[1] = v[1, 1] = w[1]
-        x[2] = v[2, 1] = getattr(self, 'order_{}_copula'.format(lev))[
-            j].H(w[2], v[1, 1], inv=True)
-        v[2, 2] = getattr(self, 'order_{}_copula'.format(lev))[
-            j].H(v[1, 1], v[2, 1], inv=False)
+        #getattr(self, 'order_{}_copula'.format(lev))[j]
+        x[2] = v[2, 1] = copula_array[1,1].H(w[2], v[1, 1], inv=True)
+        #getattr(self, 'order_{}_copula'.format(lev))[j]
+        v[2, 2] = copula_array[1, 1].H(v[1, 1], v[2, 1], inv=False)
 
-        for i in range(3, n_var+1):
+        for i in inclusive_range(3, n_var,1):
 
             #print('V:{}'.format(v))
-            #print(i)
+            #print('I {}'.format(i))
 
             # one main for-loop containing one for- loop for sampling the variables
             v[i, 1] = w[i]
             for k in range(i-1, 2, -1):
-                v[i, 1] = getattr(self, 'order_{}_copula'.format(
-                    i-k))[k].H(v[i, 1], v[i-1, 2*k-2], inv=True)
-
-            v[i, 1] = getattr(self, 'order_{}_copula'.format(i-1)
-                            )[1].H(v[i, 1], v[i-1, 1], inv=True)
+                #getattr(self, 'order_{}_copula'.format(i-k))[k]
+                v[i, 1] = copula_array[i -k,k].H(v[i, 1], v[i-1, 2*k-2], inv=True)
+            # getattr(self, 'order_{}_copula'.format(i-1))[1]
+            v[i, 1] = copula_array[i-1,1].H(v[i, 1], v[i-1, 1], inv=True)
             x[i] = v[i, 1]
             if i == n_var:
                 break
-
-            v[i, 2] = getattr(self, 'order_{}_copula'.format(i-1)
-                            )[1].H(v[i-1, 1], v[i, 1], inv=False)
-            v[i, 3] = getattr(self, 'order_{}_copula'.format(i-1)
-                            )[1].H(v[i, 1], v[i-1, 1], inv=False)
+            #getattr(self, 'order_{}_copula'.format(i-1))[1]
+            v[i, 2] = copula_array[i-1,1].H(v[i-1, 1], v[i, 1], inv=False)
+            #getattr(self, 'order_{}_copula'.format(i-1))[1]
+            v[i, 3] = copula_array[i-1,1].H(v[i, 1], v[i-1, 1], inv=False)
 
             if i > 3:
-                for j in range(2, i-2):
+                for j in range(2, i-2,1):
                     #one for-loop for computing the needed conditional distribution functions
-                    v[i, 2*j] = getattr(self, 'order_{}_copula'.format(i-j)
-                                        )[j].H(v[i-1, 2*j-2], v[i, 2*j-1], inv=False)
-                    v[i, 2*j+1] = getattr(self, 'order_{}_copula'.format(i-j)
-                                        )[j].H(v[i, 2*j-1], v[i-1, 2*j-2], inv=False)
+                    #getattr(self, 'order_{}_copula'.format(i-j))[j]
+                    v[i, 2*j] = copula_array[i-j,j].H(v[i-1, 2*j-2], v[i, 2*j-1], inv=False)
+                    #getattr(self, 'order_{}_copula'.format(i-j))[j]
+                    v[i, 2*j+1] = copula_array[i-j,j].H(v[i, 2*j-1], v[i-1, 2*j-2], inv=False)
 
             #print('A:{},{}'.format(i, 2*i-2))
             #print('CopLev:{}'.format(i-1))
             #print('CopI:{}'.format(1))
             #print('V0:{},{}'.format(i-1, 2*i-4))
             #print('V1:{},{}'.format(i, 2*i-3))
-            v[i, 2*i-2] = getattr(self, 'order_{}_copula'.format(1)
-                                )[i-1].H(v[i-1, 2*i-4], v[i, 2*i-3], inv=False)
+            #getattr(self, 'order_{}_copula'.format(1))[i-1]
+            
+            v[i, 2*i-2] = copula_array[i -
+                                       1,1].H(v[i-1, 2*i-4], v[i, 2*i-3], inv=False)
         return x[1:]
+
+    def loglikelihood(self,X):
+        """
+        ===================================================================
+        K. Aas, C. Czado, A. Frigessi, and H. Bakken.
+        Pair-copula constructions of multiple dependence.Insurance:
+        Mathematics and Economics, 44(2):182–198, 2009
+        ===================================================================
+        Algorithm 4 Likelihood evaluation for D-vine. 
+
+        ==============================
+        X must be indexed from 1 !!!!!
+        ==============================
+        """
+        copula_array = deserialise_copula(self)
+        
+        n_var = len(getattr(self, '_copula_node_array')[0])+1
+        Arr = getattr(self, '_copula_node_array')
+
+        logL = 0 
+        V = np.zeros([n_var+1,n_var+1])
+        V0 = []
+        V0.append(np.nan)
+        for i in range(1,n_var+1):
+            V0.append(X[i])
+
+        for i in range(1, n_var-1):
+            logL = logL + copula_array[1, i].Like(V0[i], V0[i+1])
+        
+        V[1, 1] = copula_array[1, 1].H(V0[1], V0[2], inv=False)
+
+        for k in range(1, n_var-3):
+            V[1, k] = copula_array[1, k+1].H(V0[k+2],V0[k+1],inv=False)
+            V[1, 2*k+1] = copula_array[1, k +
+                                       1].H(V0[k+1], V0[k+2], inv=False)
+        print('V:{}'.format([1, 2*n_var-4]))
+        print('cop:{}'.format([1, n_var - 1]))
+        print('nVar:{}'.format([1, n_var - 1]))
+
+        V[1, 2*n_var-4] = copula_array[1, n_var -1].H(V0[n_var], V0[n_var-1], inv=False)
+
+        for j in range(2, n_var-1):
+            for i in range(1, n_var-j):
+                logL = logL + copula_array[j,
+                                           i].Like(V[j-1, 2*i-1], V[j-1, 2*i])
+            if j == n_var-1:
+                break
+            V[j, 1] = copula_array[j, 1].H(V[j-1, 1], V[j-1, 2], inv=False)
+            if n_var>4:
+                for i in range(1,n_var-j-2):
+                    V[j,2*i] = copula_array[j,i+1].H(V[j-1,2*i+2], V[j-1,2*i+1], inv=False)
+                    V[j, 2*i+1] = copula_array[j, i +1].H(V[j-1, 2*i+1], V[j-1, 2*i+2], inv=False)
+            V[j, (2*n_var)-(2*j)-2] = copula_array[j, n_var-j].H(V[j -1, 2*n_var-2*j], V[j-1, (2*n_var)-(2*j)-1], inv=False)
+        return logL
+
+
 
     def forcast_vine(self, X=[]):
         return self._samp_vine(self, X=X)
@@ -681,7 +811,12 @@ class D_vine():
 
         for i in range(Nsamples):
             Y[i, :] = self._samp_vine()
-        
+            c = 0
+            while np.any(Y[i, :]>0.991):
+                Y[i, :] = self._samp_vine()
+                c=+1
+                if c >30:
+                    Y[i, :] =np.ones(n_var)*0.5
         return Y 
 
 
@@ -692,12 +827,52 @@ class D_vine():
         return 'TODO'  # Method takes X, Values at the lags.
 
 
-def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE, stationary=True):
+def inclusive_range(start, stop, step):
+    return range(start, (stop + 1) if step >= 0 else (stop - 1), step)
+
+def deserialise_copula(vine):
+    N_ar = vine._copula_node_array[0][-1]+1
+    copula_array = np.empty([N_ar, N_ar], dtype=object)
+    copula_array[:, 0] = np.nan
+    copula_array[0, :] = np.nan
+    lev = 0
+    for i in range(1, N_ar):
+        for j in vine._copula_node_array[i-1]:
+            
+            copula_array[j+lev, i] = getattr(vine,'order_{}_copula'.format(i))[j]
+            copula_array[i,j+lev] = getattr(vine,'order_{}_copula'.format(i))[j]
+        lev += 1
+    return copula_array
+
+
+def deserialise_copula_DIAG(vine):
+    N_ar = vine._copula_node_array[0][-1]+1
+    copula_array = np.empty([N_ar, N_ar], dtype=object)
+    copula_array[:, 0] = np.nan
+    copula_array[0, :] = np.nan
+    lev = 1
+
+    # FILL DIAG
+    for j in vine._copula_node_array[0]:
+        copula_array[j, j] = vine.order_1_copula[j]
+
+    # Populate the rest
+    for i in range(1, N_ar-1):
+        for j in vine._copula_node_array[i]:
+            copula_array[j+i, j] = getattr(vine,
+                                           'order_{}_copula'.format(i+1))[j]
+
+    return copula_array
+
+def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE, stationary=True, mesh_density=800):
     N_lag = len(THETA)
     copula_labels = ['T0_I{}'.format(N_lag-i) for i in range(N_lag)]
     variables = ['L{}'.format(N_lag-i) for i in range(N_lag+1)]
 
     COP = {}
+    if len(COPULA_CHOICE)<2:
+        print('Only one copula selected!')
+        COPULA_CHOICE = [COPULA_CHOICE]*N_lag
 
     for i in range(N_lag):
         if stationary:
@@ -706,15 +881,18 @@ def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE, stationary=True):
             Marginal0.label = variables[i]
             Marginal1.label = variables[i+1]
             inputs = {variables[i]: Marginal0, variables[i+1]: Marginal1}
-            copula = Stochastic_model([variables[i], variables[i+1]],shared=True)
+            copula = Stochastic_model([variables[i], variables[i+1]],shared=True, mesh_density=mesh_density)
         else:
-            copula = Stochastic_model([variables[i], variables[i+1]])
+            copula = Stochastic_model([variables[i], variables[i+1]], mesh_density=mesh_density)
             inputs = {variables[i]: Marginal, variables[i+1]: Marginal}
 
         copula.generate_marginal(**inputs)
-        copula.choose_copula(THETA[i], copula_choice=COPULA_CHOICE)
-        copula.mesh_sample(mesh_density=800)
+        print('COPULA CHOICE: {}'.format(COPULA_CHOICE[i]))
+        copula.choose_copula(THETA[i], copula_choice=COPULA_CHOICE[i])
+        copula.mesh_sample()
+        print('\tCoputing PDF and CDF')
         copula.compute_cdf()
+        copula.compute_pdf()
         copula.label = copula_labels[i]
         copula.marginal_labels = [variables[i], variables[i+1]]
         COP[i+1] = copula
@@ -722,19 +900,30 @@ def fit_first_order_copula(Marginal, THETA, COPULA_CHOICE, stationary=True):
 
 
 def fit_higher_order_copula(copula_dict, copula_list, level=1):
+    print('#'*35)
+    print('Evaluating Copulae at level : {}'.format(level))
 
     N_cop = len(copula_list)-1
     cop_list_2 = {}
-    for i in range(N_cop):
+    c=0
+    for i in range(N_cop,0,-1):
+        print('='*35+'\n Copula {} and {}'.format(i,i-1))
+        print('\tCoputing PDF and CDF')
         copula_dict[copula_list[i]].compute_cdf()
-        copula_dict[copula_list[i+1]].compute_cdf()
+        copula_dict[copula_list[i-1]].compute_cdf()
         copula_dict[copula_list[i]].partial_deriv()
-        copula_dict[copula_list[i+1]].partial_deriv()
-        Dvine = D_stochastic_model(
-            copula_dict[copula_list[i]], copula_dict[copula_list[i+1]], _level=level)
+        copula_dict[copula_list[i-1]].partial_deriv()
+        copula_dict[copula_list[i]].compute_pdf()
+        copula_dict[copula_list[i-1]].compute_pdf() 
+
+        Dvine = D_stochastic_model(copula_dict[copula_list[i-1]],copula_dict[copula_list[i]], _level=level)
         cop_name, cop = Dvine.compute_conditional_copula()
-        cop_list_2[i+1] = {}
-        cop_list_2[i+1] = cop
+        c+=1
+        cop_list_2[c] = {}
+        cop_list_2[c] = cop
+
+    print('Completed Evaluation of Copulae at level : {}'.format(level))
+    print('#'*35)
     return cop_list_2
 
 """
@@ -773,6 +962,12 @@ def inclusive_range(start, stop, step):
 """
 Implimented copula classes 
 """
+class Student():
+    def __init__(self,theta):
+        self.theta = theta
+
+    def copula(self,U,V):
+        return print('MISSING')
 
 class Gaussian():
     def __init__(self, theta):
@@ -1005,9 +1200,21 @@ def confidence_limits_distribution(x, alpha, interval=False, n_interp=100, plot=
     return L, R, x_i
 
 
-def plot_lag_scatter(Data, lag, label, save_address=[],rows=2):
+def compute_tau_kendall_lags(Data, Lags):
+
+    tau = []
+    p_value = []
+    for i in Lags:
+        ta = stats.kendalltau(Data[:-i], Data[i:])
+        tau.append(ta[0])
+        p_value.append(ta[1])
+    return tau, p_value
+
+def plot_lag_scatter(Data, lag, label, save_address=[],rows=2,cmap='jet'):
     if isinstance(Data,list):
         flag= False
+    else:
+        flag= True
     
     a = int(rows)
     b = int(len(lag)/2)
@@ -1027,13 +1234,13 @@ def plot_lag_scatter(Data, lag, label, save_address=[],rows=2):
         if flag:
             xy = np.vstack([Data[:-i], Data[i:]])
         else:
-            xy = np.vstack([Data[f][:,0], Data[f][:,1]])
+            xy = np.vstack([Data[f][0], Data[f][1]])
         z = gaussian_kde(xy)(xy)
         
         if flag:
             axs[c, f0].scatter(Data[:-i], Data[i:], c=z, marker='+')
         else:
-            axs[c, f0].scatter(Data[f][:,0], Data[f][:,1], c=z, marker='+')
+            axs[c, f0].scatter(Data[f][0], Data[f][1], c=z, marker='+',cmap=cmap)
 
         axs[c, f0].text(0.01, 0.9, s='Lag : {}'.format(i),
                         horizontalalignment='left',
