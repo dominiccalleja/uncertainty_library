@@ -23,7 +23,7 @@ import scipy.signal as sig
 import scipy.stats as stats
 
 try: 
-    from smardda_stochastic_model_special import *
+    from exec.smardda_stochastic_model_special import *
 except:
     print('No smardda specials imported! \n\t Dont worry these are only for a specific application')
 
@@ -613,7 +613,7 @@ class D_vine():
         self.Fx = pdf.inverse_transform
         self.PDF = pdf
 
-    def fit_conditional_copula_row(self, Theta_Mat,level=2):
+    def fit_conditional_copula_row(self, Theta_Mat,level=2,copula=[]):
         """
         # Just impliment serial dependence and the see how it is to simulate
         Vals = getattr(self, 'order_{}_copula'.format(level-1))
@@ -621,24 +621,31 @@ class D_vine():
         Keys = list(Vals)
         tmp = fit_higher_order_copula(Vals, Keys, level=level)
         """
-        
+            
         N_lag = Theta_Mat.shape[0]
         prev_N_lag = len(list(getattr(self, 'order_{}_copula'.format(level-1)).keys()))
+
         # check Layer length:
         if not prev_N_lag - 1 == N_lag:
             print('ERROR: Theta_Mat length must be one less that lower layer \n\t Theta_Mat.shape[0] = {} - Must be {}'.format(N_lag,prev_N_lag -1))
-            return
+            #return
+
+        if not copula:
+            print('Default copula: {}'.format(self.copula_choice))
+            copula_choice = self.copula_choice
+        else:
+            print('Selected copula: {}'.format(copula))
+            copula_choice = [copula]*(N_lag+1)
+
         #Theta_Mat = np.concatenate([[np.nan], Theta_Mat])
         print('Setting Uniform Marginals.')
         Marg = PDF(np.random.uniform(0, 1, 1000))
 
         setattr(self,'order_{}_copula'.format(level),{})
-        #for j in range(1, N_lag): 
-        #    Marg.label = 'I{}_{}'.format(j,j+1)
-        setattr(self, 'order_{}_copula'.format(level),fit_first_order_copula(Marg, Theta_Mat, self.copula_choice, stationary=True, mesh_density=self.mesh_density))
-        self._copula_node_array.append(
-            list(getattr(self, 'order_{}_copula'.format(level)).keys()))
-            
+        setattr(self, 'order_{}_copula'.format(level), fit_first_order_copula(Marg, Theta_Mat, copula_choice, stationary=True, mesh_density=self.mesh_density))
+        
+        self._copula_node_array.append(list(getattr(self, 'order_{}_copula'.format(level)).keys()))
+
     def fit_nth_order(self):
 
         level = 2
@@ -692,7 +699,8 @@ class D_vine():
         j = 1
 
         if len(X):
-            w = np.concatenate([[np.array(np.nan)],X, np.random.uniform(0, 1, 1)])
+            w = np.concatenate(
+                [[np.array(np.nan)], X, np.random.uniform(0, 1, 1)])
         else:
             w = np.concatenate([[np.array(np.nan)], np.random.uniform(0, 1, n_var)])
 
@@ -707,20 +715,20 @@ class D_vine():
         #getattr(self, 'order_{}_copula'.format(lev))[j]
         v[2, 2] = copula_array[1, 1].H(v[1, 1], v[2, 1], inv=False)
 
-        for i in inclusive_range(3, n_var,1):
+        for i in range(3, n_var+1,1):
 
             #print('V:{}'.format(v))
             #print('I {}'.format(i))
 
             # one main for-loop containing one for- loop for sampling the variables
             v[i, 1] = w[i]
-            for k in range(i-1, 2, -1):
+            for k in range(i-1, 2+1, -1):
                 #getattr(self, 'order_{}_copula'.format(i-k))[k]
                 v[i, 1] = copula_array[i -k,k].H(v[i, 1], v[i-1, 2*k-2], inv=True)
             # getattr(self, 'order_{}_copula'.format(i-1))[1]
             v[i, 1] = copula_array[i-1,1].H(v[i, 1], v[i-1, 1], inv=True)
             x[i] = v[i, 1]
-            if i == n_var:
+            if i == n_var+1:
                 break
             #getattr(self, 'order_{}_copula'.format(i-1))[1]
             v[i, 2] = copula_array[i-1,1].H(v[i-1, 1], v[i, 1], inv=False)
@@ -728,7 +736,7 @@ class D_vine():
             v[i, 3] = copula_array[i-1,1].H(v[i, 1], v[i-1, 1], inv=False)
 
             if i > 3:
-                for j in range(2, i-2,1):
+                for j in range(2, i-2+1,1):
                     #one for-loop for computing the needed conditional distribution functions
                     #getattr(self, 'order_{}_copula'.format(i-j))[j]
                     v[i, 2*j] = copula_array[i-j,j].H(v[i-1, 2*j-2], v[i, 2*j-1], inv=False)
@@ -765,7 +773,7 @@ class D_vine():
         Arr = getattr(self, '_copula_node_array')
 
         logL = 0 
-        V = np.zeros([n_var+1,n_var+1])
+        V = np.zeros([n_var+3,n_var+3])
         V0 = []
         V0.append(np.nan)
         for i in range(1,n_var+1):
@@ -1238,7 +1246,7 @@ def plot_lag_scatter(Data, lag, label, save_address=[],rows=2,cmap='jet'):
         z = gaussian_kde(xy)(xy)
         
         if flag:
-            axs[c, f0].scatter(Data[:-i], Data[i:], c=z, marker='+')
+            axs[c, f0].scatter(Data[:-i], Data[i:], c=z, marker='+', cmap=cmap)
         else:
             axs[c, f0].scatter(Data[f][0], Data[f][1], c=z, marker='+',cmap=cmap)
 
